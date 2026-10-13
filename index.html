@@ -174,6 +174,72 @@
       font-weight: 600;
     }
 
+    .timer-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .timer-toggle-label, .timer-duration-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .timer-controls input, .timer-controls select {
+      accent-color: var(--accent);
+      font: inherit;
+    }
+
+    .timer-controls select {
+      padding: 4px 6px;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+
+    .timer-widget {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      color: var(--accent);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timer-widget[hidden] {
+      display: none;
+    }
+
+    .timer-track {
+      width: 48px;
+      height: 6px;
+      overflow: hidden;
+      background: var(--track-bg);
+      border-radius: 999px;
+    }
+
+    .timer-fill {
+      width: 100%;
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.2s linear;
+    }
+
+    .timer-widget.urgent {
+      color: var(--wrong-text);
+    }
+
+    .timer-widget.urgent .timer-fill {
+      background: var(--wrong-border);
+    }
+
     /* Progress bar */
     .progress-meta {
       display: flex;
@@ -580,6 +646,27 @@
           <span class="score-badge" id="scoreBadge">Score: 0 / 10</span>
         </div>
 
+        <div class="timer-controls">
+          <label class="timer-toggle-label" for="timerToggle">
+            <input type="checkbox" id="timerToggle">
+            Countdown
+          </label>
+          <label class="timer-duration-label" for="timerDuration">
+            Limit
+            <select id="timerDuration" disabled>
+              <option value="15">15 seconds</option>
+              <option value="20">20 seconds</option>
+            </select>
+          </label>
+          <div class="timer-widget" id="timerWidget" hidden>
+            <span id="timerDisplay" role="timer" aria-label="Time remaining" aria-live="off">15</span>
+            <span aria-hidden="true">s</span>
+            <div class="timer-track" aria-hidden="true">
+              <div class="timer-fill" id="timerFill"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Progress bar -->
         <div class="progress-meta">
           <span id="progressText">Question 1 of 10</span>
@@ -715,6 +802,8 @@
     let currentQuestionIdx = 0;
     let score = 0;
     let answered = false;
+    let timerIntervalId = null;
+    let timerDeadline = 0;
 
     // Elements
     const quizView = document.getElementById("quizView");
@@ -730,6 +819,11 @@
     const feedbackNote = document.getElementById("feedbackNote");
     const nextBtn = document.getElementById("nextBtn");
     const restartBtn = document.getElementById("restartBtn");
+    const timerToggle = document.getElementById("timerToggle");
+    const timerDuration = document.getElementById("timerDuration");
+    const timerWidget = document.getElementById("timerWidget");
+    const timerDisplay = document.getElementById("timerDisplay");
+    const timerFill = document.getElementById("timerFill");
 
     const resultsEmoji = document.getElementById("resultsEmoji");
     const resultsHeadline = document.getElementById("resultsHeadline");
@@ -741,6 +835,7 @@
     const optionLabels = ["A", "B", "C", "D"];
 
     function initQuiz() {
+      stopTimer();
       currentQuestionIdx = 0;
       score = 0;
       answered = false;
@@ -751,6 +846,7 @@
     }
 
     function renderQuestion() {
+      stopTimer();
       answered = false;
       const q = questions[currentQuestionIdx];
 
@@ -769,6 +865,8 @@
       feedbackNote.className = "feedback-note";
       feedbackNote.textContent = "";
       nextBtn.classList.remove("visible");
+      timerToggle.disabled = false;
+      timerDuration.disabled = !timerToggle.checked;
 
       // Render options
       optionsList.innerHTML = "";
@@ -783,11 +881,68 @@
         btn.addEventListener("click", () => handleSelectOption(idx, btn));
         optionsList.appendChild(btn);
       });
+      startTimer();
+    }
+
+    function stopTimer() {
+      if (timerIntervalId !== null) {
+        clearInterval(timerIntervalId);
+        timerIntervalId = null;
+      }
+    }
+
+    function startTimer() {
+      stopTimer();
+      timerDuration.disabled = !timerToggle.checked || answered;
+      timerWidget.hidden = !timerToggle.checked;
+      timerWidget.classList.remove("urgent");
+
+      if (!timerToggle.checked || answered) return;
+
+      const duration = Number(timerDuration.value);
+      timerDeadline = Date.now() + duration * 1000;
+      updateTimer();
+      timerIntervalId = setInterval(updateTimer, 200);
+    }
+
+    function updateTimer() {
+      const duration = Number(timerDuration.value);
+      const remaining = Math.max(0, Math.ceil((timerDeadline - Date.now()) / 1000));
+      timerDisplay.textContent = String(remaining);
+      timerDisplay.setAttribute("aria-label", `${remaining} seconds remaining`);
+      timerFill.style.width = `${(remaining / duration) * 100}%`;
+      timerWidget.classList.toggle("urgent", remaining <= 5);
+
+      if (remaining === 0) {
+        stopTimer();
+        handleTimeout();
+      }
+    }
+
+    function handleTimeout() {
+      if (answered) return;
+      answered = true;
+      timerToggle.disabled = true;
+      timerDuration.disabled = true;
+
+      const q = questions[currentQuestionIdx];
+      const allButtons = optionsList.querySelectorAll(".option-btn");
+      allButtons.forEach(btn => btn.disabled = true);
+
+      const correctBtn = allButtons[q.answer];
+      correctBtn.classList.add("correct");
+      correctBtn.querySelector(".option-status-icon").textContent = "✓";
+      feedbackNote.className = "feedback-note visible wrong-text";
+      feedbackNote.textContent = `Time's up! ${q.fact}`;
+      showNextButton();
     }
 
     function handleSelectOption(selectedIndex, selectedBtn) {
       if (answered) return;
       answered = true;
+      stopTimer();
+      timerToggle.disabled = true;
+      timerDuration.disabled = true;
 
       const q = questions[currentQuestionIdx];
       const isCorrect = selectedIndex === q.answer;
@@ -814,15 +969,18 @@
 
       scoreBadge.textContent = `Score: ${score} / ${questions.length}`;
 
-      // Update next button label
+      showNextButton();
+    }
+
+    function showNextButton() {
       if (currentQuestionIdx === questions.length - 1) {
         nextBtn.querySelector("span").textContent = "View Results";
       } else {
         nextBtn.querySelector("span").textContent = "Next";
       }
       nextBtn.classList.add("visible");
-      allButtons.forEach(btn => btn.disabled = true);
-      requestAnimationFrame(() => nextBtn.focus());
+      optionsList.querySelectorAll(".option-btn").forEach(btn => btn.disabled = true);
+      nextBtn.focus();
     }
 
     function handleNext() {
@@ -882,6 +1040,8 @@
     }
 
     nextBtn.addEventListener("click", handleNext);
+    timerToggle.addEventListener("change", startTimer);
+    timerDuration.addEventListener("change", startTimer);
     restartBtn.addEventListener("click", () => {
       initQuiz();
       questionText.focus();
