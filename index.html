@@ -147,10 +147,18 @@
 
     .title-row {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       margin-bottom: 14px;
+    }
+
+    .score-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
     }
 
     .badge-title {
@@ -172,6 +180,12 @@
       border-radius: 9999px;
       font-size: 13px;
       font-weight: 600;
+    }
+
+    .best-score-badge {
+      color: var(--text-muted);
+      background: var(--track-bg);
+      font-size: 12px;
     }
 
     .timer-controls {
@@ -593,6 +607,67 @@
       font-weight: 600;
     }
 
+    .personal-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      padding: 14px 12px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .personal-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .personal-stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .personal-stat-label {
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .reset-stats-btn {
+      margin-bottom: 10px;
+      padding: 8px 12px;
+      color: var(--text-muted);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .reset-stats-btn:hover,
+    .reset-stats-btn:focus-visible {
+      color: var(--text);
+      background: var(--surface-hover);
+    }
+
+    .reset-stats-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    #statsResetStatus {
+      margin-bottom: 10px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
     .restart-btn {
       width: 100%;
       padding: 13px;
@@ -643,7 +718,10 @@
       <div class="header">
         <div class="title-row">
           <span class="badge-title"><span>🚀</span> Space Exploration Quiz</span>
-          <span class="score-badge" id="scoreBadge">Score: 0 / 10</span>
+          <div class="score-badges">
+            <span class="score-badge" id="scoreBadge">Score: 0 / 10</span>
+            <span class="score-badge best-score-badge" id="highScoreBadge">Best: 0 / 10</span>
+          </div>
         </div>
 
         <div class="timer-controls">
@@ -720,6 +798,23 @@
           </div>
         </div>
 
+        <section class="personal-stats" aria-label="Personal best statistics">
+          <div class="personal-stat">
+            <span class="personal-stat-value" id="personalBestScore">0 / 10</span>
+            <span class="personal-stat-label">Personal best</span>
+          </div>
+          <div class="personal-stat">
+            <span class="personal-stat-value" id="personalBestAccuracy">0%</span>
+            <span class="personal-stat-label">Best accuracy</span>
+          </div>
+          <div class="personal-stat">
+            <span class="personal-stat-value" id="completedMissions">0</span>
+            <span class="personal-stat-label">Missions</span>
+          </div>
+        </section>
+
+        <button class="reset-stats-btn" id="resetStatsBtn" type="button">Reset Stats</button>
+        <div id="statsResetStatus" role="status" aria-live="polite"></div>
         <button class="restart-btn visible" id="restartBtn">Play Again 🚀</button>
       </div>
     </div>
@@ -799,6 +894,11 @@
       }
     ];
 
+    const STATS_STORAGE_KEY = "spaceQuizStats";
+    let playQuestions = [];
+    let stats = createDefaultStats();
+    let statsStorageUnavailable = false;
+    let runStatsRecorded = false;
     let currentQuestionIdx = 0;
     let score = 0;
     let answered = false;
@@ -812,6 +912,7 @@
     const questionText = document.getElementById("questionText");
     const optionsList = document.getElementById("optionsList");
     const scoreBadge = document.getElementById("scoreBadge");
+    const highScoreBadge = document.getElementById("highScoreBadge");
     const progressText = document.getElementById("progressText");
     const percentText = document.getElementById("percentText");
     const progressFill = document.getElementById("progressFill");
@@ -831,14 +932,128 @@
     const finalCorrect = document.getElementById("finalCorrect");
     const finalAccuracy = document.getElementById("finalAccuracy");
     const finalRank = document.getElementById("finalRank");
+    const personalBestScore = document.getElementById("personalBestScore");
+    const personalBestAccuracy = document.getElementById("personalBestAccuracy");
+    const completedMissions = document.getElementById("completedMissions");
+    const resetStatsBtn = document.getElementById("resetStatsBtn");
+    const statsResetStatus = document.getElementById("statsResetStatus");
 
     const optionLabels = ["A", "B", "C", "D"];
+
+    function createDefaultStats() {
+      return { bestScore: 0, bestAccuracy: 0, completedMissions: 0 };
+    }
+
+    function normalizeStats(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return createDefaultStats();
+      }
+
+      const validNumber = (number, maximum) => (
+        typeof number === "number" && Number.isFinite(number) && number >= 0
+          ? Math.min(number, maximum)
+          : 0
+      );
+      return {
+        bestScore: Math.floor(validNumber(value.bestScore, questions.length)),
+        bestAccuracy: Math.floor(validNumber(value.bestAccuracy, 100)),
+        completedMissions: Math.floor(validNumber(value.completedMissions, Number.MAX_SAFE_INTEGER))
+      };
+    }
+
+    function readStats() {
+      if (statsStorageUnavailable) return stats;
+
+      let storedStats;
+      try {
+        storedStats = localStorage.getItem(STATS_STORAGE_KEY);
+      } catch {
+        statsStorageUnavailable = true;
+        return stats;
+      }
+
+      if (storedStats === null) return stats;
+      try {
+        return normalizeStats(JSON.parse(storedStats));
+      } catch {
+        return createDefaultStats();
+      }
+    }
+
+    function writeStats(value) {
+      try {
+        localStorage.setItem(STATS_STORAGE_KEY, JSON.stringify(value));
+        statsStorageUnavailable = false;
+      } catch {
+        statsStorageUnavailable = true;
+      }
+    }
+
+    function renderStats() {
+      personalBestScore.textContent = `${stats.bestScore} / ${questions.length}`;
+      personalBestAccuracy.textContent = `${stats.bestAccuracy}%`;
+      completedMissions.textContent = String(stats.completedMissions);
+      highScoreBadge.textContent = `Best: ${stats.bestScore} / ${questions.length}`;
+    }
+
+    function shuffle(items) {
+      const shuffled = [...items];
+      for (let index = shuffled.length - 1; index > 0; index--) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+      }
+      return shuffled;
+    }
+
+    function createPlayQuestions() {
+      return shuffle(questions.map(question => {
+        const options = shuffle(question.options.map((text, index) => ({
+          text,
+          isCorrect: index === question.answer
+        })));
+        return {
+          ...question,
+          options: options.map(option => option.text),
+          answer: options.findIndex(option => option.isCorrect)
+        };
+      }));
+    }
+
+    function recordCompletedMission(accuracy) {
+      if (runStatsRecorded) return;
+      const previousStats = normalizeStats(readStats());
+      stats = {
+        bestScore: Math.max(previousStats.bestScore, score),
+        bestAccuracy: Math.max(previousStats.bestAccuracy, accuracy),
+        completedMissions: previousStats.completedMissions + 1
+      };
+      runStatsRecorded = true;
+      writeStats(stats);
+    }
+
+    function resetStats() {
+      stats = createDefaultStats();
+      try {
+        localStorage.removeItem(STATS_STORAGE_KEY);
+        statsStorageUnavailable = false;
+      } catch {
+        statsStorageUnavailable = true;
+        writeStats(stats);
+      }
+      renderStats();
+      statsResetStatus.textContent = "Personal stats reset.";
+    }
 
     function initQuiz() {
       stopTimer();
       currentQuestionIdx = 0;
       score = 0;
       answered = false;
+      runStatsRecorded = false;
+      playQuestions = createPlayQuestions();
+      stats = normalizeStats(readStats());
+      renderStats();
+      statsResetStatus.textContent = "";
       quizView.style.display = "block";
       resultsView.style.display = "none";
       resultsView.classList.remove("celebration");
@@ -848,15 +1063,15 @@
     function renderQuestion() {
       stopTimer();
       answered = false;
-      const q = questions[currentQuestionIdx];
+      const q = playQuestions[currentQuestionIdx];
 
       // Update header & progress
       questionCategory.textContent = q.category;
       questionText.textContent = q.question;
-      scoreBadge.textContent = `Score: ${score} / ${questions.length}`;
+      scoreBadge.textContent = `Score: ${score} / ${playQuestions.length}`;
 
-      const progressPercent = Math.round((currentQuestionIdx / questions.length) * 100);
-      progressText.textContent = `Question ${currentQuestionIdx + 1} of ${questions.length}`;
+      const progressPercent = Math.round((currentQuestionIdx / playQuestions.length) * 100);
+      progressText.textContent = `Question ${currentQuestionIdx + 1} of ${playQuestions.length}`;
       percentText.textContent = `${progressPercent}%`;
       progressFill.style.width = `${progressPercent}%`;
       progressTrack.setAttribute("aria-valuenow", String(progressPercent));
@@ -925,7 +1140,7 @@
       timerToggle.disabled = true;
       timerDuration.disabled = true;
 
-      const q = questions[currentQuestionIdx];
+      const q = playQuestions[currentQuestionIdx];
       const allButtons = optionsList.querySelectorAll(".option-btn");
       allButtons.forEach(btn => btn.disabled = true);
 
@@ -944,7 +1159,7 @@
       timerToggle.disabled = true;
       timerDuration.disabled = true;
 
-      const q = questions[currentQuestionIdx];
+      const q = playQuestions[currentQuestionIdx];
       const isCorrect = selectedIndex === q.answer;
       const allButtons = optionsList.querySelectorAll(".option-btn");
 
@@ -967,13 +1182,13 @@
         feedbackNote.textContent = `Incorrect! ${q.fact}`;
       }
 
-      scoreBadge.textContent = `Score: ${score} / ${questions.length}`;
+      scoreBadge.textContent = `Score: ${score} / ${playQuestions.length}`;
 
       showNextButton();
     }
 
     function showNextButton() {
-      if (currentQuestionIdx === questions.length - 1) {
+      if (currentQuestionIdx === playQuestions.length - 1) {
         nextBtn.querySelector("span").textContent = "View Results";
       } else {
         nextBtn.querySelector("span").textContent = "Next";
@@ -984,7 +1199,7 @@
     }
 
     function handleNext() {
-      if (currentQuestionIdx < questions.length - 1) {
+      if (currentQuestionIdx < playQuestions.length - 1) {
         currentQuestionIdx++;
         renderQuestion();
         questionText.focus();
@@ -1000,14 +1215,16 @@
 
       // 100% progress
       progressFill.style.width = "100%";
-      progressText.textContent = `Completed 10 of 10`;
+      progressText.textContent = `Completed ${playQuestions.length} of ${playQuestions.length}`;
       percentText.textContent = "100%";
       progressTrack.setAttribute("aria-valuenow", "100");
-      scoreBadge.textContent = `Score: ${score} / ${questions.length}`;
+      scoreBadge.textContent = `Score: ${score} / ${playQuestions.length}`;
 
-      const accuracy = Math.round((score / questions.length) * 100);
-      finalCorrect.textContent = `${score} / ${questions.length}`;
+      const accuracy = Math.round((score / playQuestions.length) * 100);
+      finalCorrect.textContent = `${score} / ${playQuestions.length}`;
       finalAccuracy.textContent = `${accuracy}%`;
+      recordCompletedMission(accuracy);
+      renderStats();
 
       // Emoji and reaction rank based on score
       if (score === 10) {
@@ -1046,6 +1263,7 @@
       initQuiz();
       questionText.focus();
     });
+    resetStatsBtn.addEventListener("click", resetStats);
 
     // Initialize
     initQuiz();
